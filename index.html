@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Water Drop Lab</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#101522;color:#f0f4ff;margin:0;padding:18px}main{max-width:780px;margin:auto}h1{font-size:1.6rem}p{color:#bbc6dd}.panel{background:#1c2638;padding:16px;border-radius:14px;margin:12px 0}button{background:#596df5;color:white;border:0;padding:13px 17px;margin:4px;border-radius:10px;font-weight:600}button:disabled{opacity:.4}input{width:100%}canvas{background:#111a2b;width:100%;height:250px;border-radius:8px}table{width:100%;border-collapse:collapse}td,th{padding:6px;border-bottom:1px solid #344258;text-align:left}.stats{display:grid;grid-template-columns:1fr 1fr;gap:8px}.stat{font-size:1.35rem;font-weight:700}small{color:#b8c7da}label{display:block;margin:12px 0}#status{font-weight:700;color:#a6b6ff}
+</style></head>
+<body><main><h1>Water Drop Lab</h1><p>Detect drops from your phone microphone, measure intervals and fit a linear trend. Audio stays on your device.</p>
+<section class="panel"><div id="status">Microphone stopped</div><button id="start">Start microphone</button><button id="stop" disabled>Stop</button><button id="reset">Clear</button><button id="csv">Export CSV</button>
+<label>Sensitivity (lower detects quieter drops): <span id="sensvalue">5</span><input type="range" id="sensitivity" min="2" max="40" value="5" step="1"></label><label>Minimum time between detections (ms): <span id="gapvalue">400</span><input type="range" id="gap" min="100" max="3000" step="100" value="400"></label>
+<small>Requires HTTPS or localhost and microphone permission. Adjust sensitivity to distinguish drops from background noise.</small></section>
+<section class="panel stats"><div>Detected drops<div class="stat" id="count">0</div></div><div>Last interval<div class="stat" id="last">—</div></div><div>Mean interval<div class="stat" id="mean">—</div></div><div>Linear R²<div class="stat" id="r2">—</div></div></section>
+<section class="panel"><strong>Interval vs drop number</strong><canvas id="plot"></canvas><div id="equation">Record at least three drops to calculate regression.</div></section>
+<section class="panel"><strong>Detections</strong><table><thead><tr><th>Drop</th><th>Elapsed (s)</th><th>Interval (s)</th></tr></thead><tbody id="rows"></tbody></table></section></main>
+<script>
+let stream,ctx,source,analyser,arr,raf,prevRms=0,lastDetected=-Infinity,firstTime=null,drops=[],active=false;
+const el=id=>document.getElementById(id),plot=el('plot');
+function redraw(){
+el('count').textContent=drops.length;
+const intervals=drops.slice(1).map((v,i)=>v-drops[i]);
+el('last').textContent=intervals.length?intervals.at(-1).toFixed(3)+' s':'—';
+el('mean').textContent=intervals.length?(intervals.reduce((a,b)=>a+b,0)/intervals.length).toFixed(3)+' s':'—';
+el('rows').innerHTML=drops.map((t,i)=>'<tr><td>'+(i+1)+'</td><td>'+t.toFixed(3)+'</td><td>'+(i?(t-drops[i-1]).toFixed(3):'—')+'</td></tr>').join('');
+const cv=plot.getContext('2d'),w=plot.width=Math.max(300,plot.clientWidth*devicePixelRatio),h=plot.height=250*devicePixelRatio;
+cv.clearRect(0,0,w,h);cv.strokeStyle='#4b5b77';cv.beginPath();cv.moveTo(45,15);cv.lineTo(45,h-35);cv.lineTo(w-14,h-35);cv.stroke();
+if(intervals.length<2){el('r2').textContent='—';el('equation').textContent='Record at least three drops to calculate regression.';return}
+const xs=intervals.map((_,i)=>i+2),n=xs.length,mx=xs.reduce((a,b)=>a+b,0)/n,my=intervals.reduce((a,b)=>a+b,0)/n,sxx=xs.reduce((a,x)=>a+(x-mx)**2,0),sxy=xs.reduce((a,x,i)=>a+(x-mx)*(intervals[i]-my),0),syy=intervals.reduce((a,y)=>a+(y-my)**2,0),slope=sxx?sxy/sxx:0,intercept=my-slope*mx,r2=sxx&&syy?sxy*sxy/(sxx*syy):null;
+el('r2').textContent=r2===null?'—':r2.toFixed(4);
+el('equation').textContent='Interval (s) = '+slope.toFixed(4)+' × drop number + '+intercept.toFixed(4)+'; R² = '+(r2===null?'undefined':r2.toFixed(4));
+let lo=Math.min(...intervals,...xs.map(x=>slope*x+intercept)),hi=Math.max(...intervals,...xs.map(x=>slope*x+intercept));if(hi===lo){hi+=1;lo-=1}
+const X=x=>45+(x-2)/(Math.max(1,n-1))*(w-65),Y=y=>15+(hi-y)/(hi-lo)*(h-65);
+cv.strokeStyle='#8794ff';cv.lineWidth=3;cv.beginPath();cv.moveTo(X(2),Y(slope*2+intercept));cv.lineTo(X(n+1),Y(slope*(n+1)+intercept));cv.stroke();
+cv.fillStyle='#38d5d0';intervals.forEach((y,i)=>{cv.beginPath();cv.arc(X(i+2),Y(y),5*devicePixelRatio,0,Math.PI*2);cv.fill()});
+}
+function tick(){if(!active)return;analyser.getFloatTimeDomainData(arr);let rms=0;for(const s of arr)rms+=s*s;rms=Math.sqrt(rms/arr.length);const now=performance.now(),threshold=Number(el('sensitivity').value)/1000,quiet=threshold*0.45;if(rms>threshold&&prevRms<quiet&&now-lastDetected>Number(el('gap').value)){if(firstTime===null)firstTime=now;drops.push((now-firstTime)/1000);lastDetected=now;redraw()}prevRms=rms;raf=requestAnimationFrame(tick)}
+el('start').onclick=async()=>{try{stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});ctx=new AudioContext();source=ctx.createMediaStreamSource(stream);analyser=ctx.createAnalyser();analyser.fftSize=1024;arr=new Float32Array(analyser.fftSize);source.connect(analyser);active=true;prevRms=0;el('status').textContent='Listening for drops';el('start').disabled=true;el('stop').disabled=false;tick()}catch(e){el('status').textContent='Microphone unavailable: '+e.message}};
+el('stop').onclick=async()=>{active=false;cancelAnimationFrame(raf);stream?.getTracks().forEach(t=>t.stop());await ctx?.close();el('status').textContent='Microphone stopped';el('start').disabled=false;el('stop').disabled=true};
+el('reset').onclick=()=>{drops=[];firstTime=null;lastDetected=-Infinity;redraw()};
+el('sensitivity').oninput=()=>el('sensvalue').textContent=el('sensitivity').value;
+el('gap').oninput=()=>el('gapvalue').textContent=el('gap').value;
+el('csv').onclick=()=>{const rows=['drop,elapsed_s,interval_s',...drops.map((t,i)=>(i+1)+','+t.toFixed(4)+','+(i?(t-drops[i-1]).toFixed(4):''))];const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([rows.join('\n')],{type:'text/csv'}));a.download='water_drop_measurements.csv';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)};
+redraw();
+</script></body></html>
